@@ -17,8 +17,46 @@
     - name: TCP port 6443 on master is reachable from worker
       wait_for: "host={{ hostvars['k8s-master-1']['ansible_default_ipv4']['address'] }} port=6443 timeout=1"
 
-    - name: join cluster
+    - name: join cluster # it wont run if the node_joined.log is already joined
       shell: "{{ hostvars['k8s-master-1'].join_command }} >> node_joined.log"
       args:
-        chdir: /home/ubuntu
+        chdir: /home/cloud_user
         creates: node_joined.log
+
+- hosts: workers # clear way to label worker nodes
+  tasks:
+    - name: Get full hostname
+      command: hostname -f
+      register: full_hostname
+    - name: label worker nodes
+      shell: kubectl label nodes {{ full_hostname.stdout }} node-role.kubernetes.io/xx=yy --overwrite
+      delegate_to: "{{ groups['master'][0] }}"
+
+- hosts: master
+  tasks:
+    - name: Wait for node to be ready # another way to label worker nodes (not that clean, though)
+      shell: kubectl get nodes --no-headers | grep -v control-plane
+      register: node_ready
+      until: node_ready.stdout.find("Ready") != -1
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Extract first column and store it
+      set_fact:
+        node_names: "{{ node_ready.stdout_lines | map('split') | map('first') | list }}"
+
+    - name: Label worker nodes
+      loop: "{{ node_names }}"
+      shell: kubectl label nodes {{ item }} node-role.kubernetes.io/zzz=zzz --overwrite
+      # k8s: # alternative but needs to be install ansible k8s module
+      #   state: present
+      #   definition:
+      #     apiVersion: v1
+      #     kind: Node
+      #     metadata:
+      #       # name: "a60bd81d962c.mylabserver.com"
+      #       name: "{{ inventory_hostname }}"
+      #       labels:
+      #         node-role.kubernetes.io/worker: dup
+      delegate_to: "{{ groups['master'][0] }}"
